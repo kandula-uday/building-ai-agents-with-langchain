@@ -165,12 +165,16 @@ This repository contains three Modules that serve as introductions to many of La
 - Multimodal Messages
 - Project: Personal Chef
 
+[Module 1 Study Notes](notebooks/module-1/Module-1-Study-Notes.md) — explanations and examples for the module's concepts.
+
 ### Module 2: Advanced Agent
 
 - Model Context Protocol (MCP)
 - Context and State
 - Multi-Agent Systems
 - Project: Wedding Planner
+
+[Module 2 Study Notes](notebooks/module-2/Module-2-Study-Notes.md) — MCP, state, context, multi-agent systems, SQL, and RAG.
 
 ### Module 3: Production-Ready Agent
 
@@ -180,6 +184,8 @@ This repository contains three Modules that serve as introductions to many of La
 - Dynamic Agents
 - Project: Email Assistant
 - Bonus: Agent Chat UI
+
+[Module 3 Study Notes](notebooks/module-3/Module-3-Study-Notes.md) — middleware, human approval, message management, and dynamic agents.
 
 ## 📖 Related Resources
 

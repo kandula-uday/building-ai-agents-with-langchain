@@ -1,0 +1,151 @@
+"""
+Post 2: Structured output. Make the SQL agent return typed data, not just text.
+
+Builds on Post 1 (same database + tools). New here:
+  - response_format=<Pydantic model>
+  - result["structured_response"]
+  - ToolStrategy vs ProviderStrategy
+
+Setup:
+  pip install -U langchain langchain-openai langgraph pydantic
+  export OPENAI_API_KEY="sk-..."
+"""
+
+import sqlite3
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+from langchain.tools import tool
+
+# ---------------------------------------------------------------
+# Same demo database as Post 1
+# ---------------------------------------------------------------
+conn = sqlite3.connect(":memory:", check_same_thread=False)
+conn.execute("CREATE TABLE orders (id INTEGER, customer TEXT, amount REAL, status TEXT)")
+conn.executemany(
+    "INSERT INTO orders VALUES (?, ?, ?, ?)",
+    [
+        (1, "Alice", 120.50, "shipped"),
+        (2, "Bob", 75.00, "pending"),
+        (3, "Carol", 210.25, "shipped"),
+        (4, "Dave", 15.99, "cancelled"),
+    ],
+)
+conn.commit()
+
+ALLOWED_TABLES = {"orders"}
+
+
+def check_table(table: str) -> None:
+    if table not in ALLOWED_TABLES:
+        raise ValueError(f"Unknown table: {table}. Allowed: {sorted(ALLOWED_TABLES)}")
+
+
+# ---------------------------------------------------------------
+# Same tools as Post 1
+# ---------------------------------------------------------------
+@tool
+def get_row_count(table: str) -> int:
+    """Return the number of rows in a table."""
+    check_table(table)
+    return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
+@tool
+def get_columns(table: str) -> list[str]:
+    """Return the column names of a table."""
+    check_table(table)
+    return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+@tool
+def count_by_status(table: str) -> dict[str, int]:
+    """Return how many rows a table has for each value of its 'status' column."""
+    check_table(table)
+    rows = conn.execute(f"SELECT status, COUNT(*) FROM {table} GROUP BY status").fetchall()
+    return dict(rows)
+
+
+@tool
+def total_amount(table: str, status: str | None = None) -> float:
+    """Return the sum of the 'amount' column, optionally filtered by status."""
+    check_table(table)
+    if status:
+        sql = f"SELECT COALESCE(SUM(amount), 0) FROM {table} WHERE status = ?"
+        return conn.execute(sql, (status,)).fetchone()[0]
+    return conn.execute(f"SELECT COALESCE(SUM(amount), 0) FROM {table}").fetchone()[0]
+
+
+TOOLS = [get_row_count, get_columns, count_by_status, total_amount]
+
+# ---------------------------------------------------------------
+# NEW: the schema the agent must return.
+# Field descriptions are read by the model, just like tool docstrings.
+# ---------------------------------------------------------------
+class TableReport(BaseModel):
+    """A data quality summary of one table."""
+
+    table: str = Field(description="Name of the table")
+    row_count: int = Field(description="Total number of rows")
+    columns: list[str] = Field(description="Column names in the table")
+    status_counts: dict[str, int] = Field(description="Row count per status value")
+    total_amount: float = Field(description="Sum of the amount column")
+    health: Literal["good", "warning", "bad"] = Field(
+        description="'warning' if more than 20% of orders are cancelled, otherwise 'good'"
+    )
+    summary: str = Field(description="One-sentence summary for a dashboard")
+
+
+# ---------------------------------------------------------------
+# Option A: pass the schema directly.
+# LangChain uses ProviderStrategy (the model's native structured output)
+# when the model supports it, and falls back to tool calling otherwise.
+# ---------------------------------------------------------------
+agent = create_agent(
+    model="openai:gpt-4o",
+    tools=TOOLS,
+    system_prompt="You are a data quality assistant. Use the tools to gather facts before reporting.",
+    response_format=TableReport,
+)
+
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "Give me a health report for the orders table."}]}
+)
+
+# The typed object lives under "structured_response", not in messages[-1].content
+report: TableReport = result["structured_response"]
+
+print(type(report).__name__)  # TableReport
+print(report.row_count)       # 4
+print(report.status_counts)   # {'cancelled': 1, 'pending': 1, 'shipped': 2}
+print(report.health)          # warning (1 of 4 = 25% cancelled)
+print(report.model_dump_json(indent=2))
+
+# Now it's just data: use it in your pipeline
+if report.health != "good":
+    print(f"⚠️ Alert: {report.table} -> {report.summary}")
+
+# ---------------------------------------------------------------
+# Option B: ToolStrategy. Works with any model that supports tool calling.
+# Use it when your model has no native structured output.
+# ---------------------------------------------------------------
+agent_tool_strategy = create_agent(
+    model="openai:gpt-4o",
+    tools=TOOLS,
+    response_format=ToolStrategy(TableReport),
+)
+
+result_b = agent_tool_strategy.invoke(
+    {"messages": [{"role": "user", "content": "Report on the orders table."}]}
+)
+
+# With ToolStrategy, the agent can finish WITHOUT a structured response,
+# so read it safely.
+report_b = result_b.get("structured_response")
+if report_b is None:
+    print("No structured response. Check result_b['messages'] to see what happened.")
+else:
+    print(report_b.model_dump())
